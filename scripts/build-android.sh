@@ -26,8 +26,10 @@ fi
 BUILD_DIR="$(dirname "${SPEC_GMK}")"
 echo "building in ${BUILD_DIR} (${JVM_VARIANT} VM, ${ECLIPSE_JRE_ARCH})"
 
-# jdk8's legacy makefiles honor the JOBS variable; both eras honor -j.
-make -C "${BUILD_DIR}" -j"${JOBS}" JOBS="${JOBS}" images
+# Parallelism goes through JOBS only: jdk8's Main.gmk hard-rejects -j
+# ("make -j is not supported, use make JOBS=n") and jdk17+'s Init.gmk
+# derives its -j from $(JOBS) (serial when empty).
+make -C "${BUILD_DIR}" JOBS="${JOBS}" images
 
 if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
     IMAGE_DIR="${BUILD_DIR}/j2re-image"

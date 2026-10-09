@@ -69,18 +69,51 @@ if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
         --with-freetype-lib="${FREETYPE_PREFIX}/lib" \
         || conf_status=$?
 else
+    # Two configure constraints shape this branch:
+    #  1. toolchain-type=clang also inspects the *build-platform* compilers
+    #     (BUILD_CC/BUILD_CXX must report "clang" in --version output) and
+    #     probes unprefixed ar/nm/strip/objcopy, whose host binutils cannot
+    #     index target ELF archives (env values for these are explicitly
+    #     ignored by this autoconf era).
+    #  2. a target-built freetype is required: the system-freetype check
+    #     links a test program against libfreetype, which fails with the
+    #     host's x86_64 copy. 'bundled' compiles the in-tree sources with
+    #     the target CC instead.
+    # A shim dir on PATH resolves both: unprefixed names map to host clang
+    # (build helpers) and to NDK llvm-* tools (target-aware, format
+    # agnostic). Ar must not remain in the environment so its ignored-value
+    # warning does not mask the shim resolution.
+    HOST_CLANG="$(command -v clang || true)"
+    HOST_CLANGXX="$(command -v clang++ || true)"
+    if [[ -z "${HOST_CLANG}" || -z "${HOST_CLANGXX}" ]]; then
+        echo "host clang/clang++ not found (needed for build-platform helpers)" >&2
+        exit 1
+    fi
+    SHIM_DIR="${DEPS_DIR}/build-tool-shims"
+    mkdir -p "${SHIM_DIR}"
+    ln -sf "${HOST_CLANG}" "${SHIM_DIR}/cc"
+    ln -sf "${HOST_CLANGXX}" "${SHIM_DIR}/CC"
+    ln -sf "${HOST_CLANGXX}" "${SHIM_DIR}/g++"
+    for t in ar ranlib strip nm objcopy objdump; do
+        ln -sf "${TOOLCHAIN}/bin/llvm-${t}" "${SHIM_DIR}/${t}"
+    done
+    ln -sf "${TOOLCHAIN}/bin/llvm-objcopy" "${SHIM_DIR}/gobjcopy"
+    ln -sf "${TOOLCHAIN}/bin/llvm-objdump" "${SHIM_DIR}/gobjdump"
+    export PATH="${SHIM_DIR}:${PATH}"
+
     # JDK 17+ autoconf: clang toolchain, headless-only image, warnings never
     # fatal for cross builds, no dtrace, no precompiled headers. The clang
     # wrapper already carries --target; repeating it (identical) keeps
     # non-wrapper invocations on the same triple.
     EXTRA_FLAGS="--target=${CLANG_PREFIX}${ANDROID_API} -fPIC"
-    CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" STRIP="${STRIP}" \
+    env -u AR -u RANLIB -u STRIP CC="${CC}" CXX="${CXX}" \
     bash configure "${COMMON_FLAGS[@]}" \
         --with-toolchain-type=clang \
         --enable-headless-only \
         --disable-warnings-as-errors \
         --disable-dtrace \
         --disable-precompiled-headers \
+        --with-freetype=bundled \
         --with-version-opt="eclipse$(date -u +%Y%m%d)" \
         --with-extra-cflags="${EXTRA_FLAGS}" \
         --with-extra-cxxflags="${EXTRA_FLAGS}" \
