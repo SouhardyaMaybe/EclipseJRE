@@ -110,6 +110,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+      # Cheap content gate before uploading: catches a broken image (missing
+      # JVM library or payload) while this cell is still warm instead of at
+      # package stage, when every other cell has already burned hours.
+      - name: Verify runtime archive contents
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.version }}" == "8" ]]; then
+            tarball=(toolchains/java8/jre8-*.tar.xz)
+            payload='(^|/)lib/rt\.jar$'
+          else
+            tarball=(toolchains/java17-25/jre${{ matrix.version }}-*.tar.xz)
+            payload='(^|/)lib/modules$'
+          fi
+          echo "checking ${tarball[0]}"
+          tar -tJf "${tarball[0]}" > runtime-archive-list.txt
+          grep -qE '(^|/)bin/java$' runtime-archive-list.txt
+          grep -qE '(^|/)lib/(.*/)?(client|server)/libjvm\.so$' runtime-archive-list.txt
+          grep -qE "$payload" runtime-archive-list.txt
+          echo "archive content OK"
+
       - name: Record build provenance
         env:
           BUILD_VERSION: ${{ matrix.version }}
