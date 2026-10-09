@@ -26,7 +26,7 @@ fi
 BUILD_DIR="$(dirname "${SPEC_GMK}")"
 echo "building in ${BUILD_DIR} (${JVM_VARIANT} VM, ${ECLIPSE_JRE_ARCH})"
 
-# Two build-invocation constraints:
+# Three build-invocation constraints:
 # - Parallelism goes through JOBS only: jdk8's Main.gmk hard-rejects -j
 #   ("make -j is not supported, use make JOBS=n") and jdk17+'s Init.gmk
 #   derives its -j from $(JOBS) (serial when empty).
@@ -36,7 +36,9 @@ echo "building in ${BUILD_DIR} (${JVM_VARIANT} VM, ${ECLIPSE_JRE_ARCH})"
 #   The command-line assignment overrides the makefile's plain "=" and
 #   propagates to every sub-make; 17+ ignores it (its gate is the
 #   spec-level WARNINGS_AS_ERRORS=false from --disable-warnings-as-errors).
-make -C "${BUILD_DIR}" JOBS="${JOBS}" WARNINGS_ARE_ERRORS= images
+# - -k keeps independent jobs running after a failure so one CI round
+#   surfaces every distinct port-fix error instead of just the first.
+make -C "${BUILD_DIR}" -k JOBS="${JOBS}" WARNINGS_ARE_ERRORS= images
 
 if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
     IMAGE_DIR="${BUILD_DIR}/j2re-image"

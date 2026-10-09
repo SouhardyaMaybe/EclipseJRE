@@ -5,10 +5,10 @@
 #                   librt.a) so bionic's libc-merged system libraries still
 #                   satisfy -l checks during configure and link
 #   all versions  - the pinned NDK, installed via sdkmanager if missing
+#   all versions  - CUPS 2.2.4 source (headers only; fatal configure check)
 #   jdk8          - NDK r10e gcc standalone toolchain (cross compiler)
-#   jdk8          - CUPS 2.2.4 source (headers only; fatal configure check)
 #   jdk8          - freetype 2.10.4 built per-arch against that toolchain
-#                   (jdk8 does not vendor freetype sources)
+#                   (jdk8 does not vendor freetype sources; 17+ bundles)
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +38,19 @@ if [[ ! -f "${DUMMY_LIBS}/libpthread.a" ]]; then
     echo "created stub archives in ${DUMMY_LIBS}"
 fi
 
+# ---------------------------------------------------------------------------
+# 3. CUPS 2.2.4 source (all versions): configure's cups header check is fatal
+#    in both eras (jdk8 --with-cups-include, JDK 17+ the same); only headers
+#    are used, the print pipeline resolves the library at runtime.
+# ---------------------------------------------------------------------------
+if [[ ! -f "${CUPS_DIR}/cups/cups.h" ]]; then
+    echo "fetching cups 2.2.4 source"
+    curl -fL --retry 3 -o "${DEPS_DIR}/cups-2.2.4-source.tar.gz" \
+        "https://github.com/apple/cups/releases/download/v2.2.4/cups-2.2.4-source.tar.gz"
+    tar -xzf "${DEPS_DIR}/cups-2.2.4-source.tar.gz" -C "${DEPS_DIR}"
+    rm -f "${DEPS_DIR}/cups-2.2.4-source.tar.gz"
+fi
+
 # The remaining dependencies only exist for jdk8 cells.
 if [[ "${ECLIPSE_JRE_VERSION}" != "8" ]]; then
     echo "no further dependencies for jdk${ECLIPSE_JRE_VERSION}"
@@ -45,7 +58,7 @@ if [[ "${ECLIPSE_JRE_VERSION}" != "8" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Legacy NDK r10e gcc toolchain (standalone, per-arch).
+# 4. Legacy NDK r10e gcc toolchain (standalone, per-arch).
 # ---------------------------------------------------------------------------
 R10E_ZIP_URL="https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip"
 
@@ -71,18 +84,6 @@ fi
 
 # Smoke-test the compiler so later steps fail early and clearly.
 "${CC}" --version | sed -n '1p'
-
-# ---------------------------------------------------------------------------
-# 4. CUPS 2.2.4 source: jdk8 configure requires cups headers (fatal check);
-#    only the headers are used, the print pipeline links them at runtime.
-# ---------------------------------------------------------------------------
-if [[ ! -f "${CUPS_DIR}/cups/cups.h" ]]; then
-    echo "fetching cups 2.2.4 source"
-    curl -fL --retry 3 -o "${DEPS_DIR}/cups-2.2.4-source.tar.gz" \
-        "https://github.com/apple/cups/releases/download/v2.2.4/cups-2.2.4-source.tar.gz"
-    tar -xzf "${DEPS_DIR}/cups-2.2.4-source.tar.gz" -C "${DEPS_DIR}"
-    rm -f "${DEPS_DIR}/cups-2.2.4-source.tar.gz"
-fi
 
 # ---------------------------------------------------------------------------
 # 5. freetype 2.10.4, cross-built per-arch. Host libraries are explicitly

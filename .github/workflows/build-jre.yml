@@ -94,9 +94,15 @@ jobs:
           ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
         run: bash scripts/fetch-source.sh "${{ matrix.version }}"
 
+      - name: Apply Android port fixes
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+        run: bash scripts/port-fixes.sh
+
       # setup-java exports JAVA_HOME_<version>_X64 variables; resolve the
       # matrix-selected boot JDK via indirect expansion.
-      - name: Configure (FIRST DRAFT)
+      - name: Configure
         env:
           ECLIPSE_JRE_VERSION: ${{ matrix.version }}
           ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
@@ -107,7 +113,7 @@ jobs:
           echo "boot JDK: ${BOOT_JDK}"
           bash scripts/configure-android.sh
 
-      - name: Build image (FIRST DRAFT)
+      - name: Build image
         env:
           ECLIPSE_JRE_VERSION: ${{ matrix.version }}
           ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
