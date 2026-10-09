@@ -1,0 +1,9 @@
+# Build outputs
+out/
+staging/
+openjdk-src/
+*.tar.xz
+
+# IDE
+.idea/
+.vscode/

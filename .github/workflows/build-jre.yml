@@ -1,0 +1,152 @@
+name: build-jre
+
+# DRAFT skeleton: cross-compiles OpenJDK 8/17/21/25 for Android and packages
+# the launcher's binpack layout. Expect per-cell iteration on first runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_version:
+        description: "Restrict to one runtime version (8/17/21/25, or empty for all)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "jre-*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [8, 17, 21, 25]
+        arch: [arm, arm64, x86, x86_64]
+        include:
+          - version: 8
+            boot_jdk: "8"
+          - version: 17
+            boot_jdk: "17"
+          - version: 21
+            boot_jdk: "21"
+          - version: 25
+            boot_jdk: "24"
+    name: "jdk${{ matrix.version }}-${{ matrix.arch }}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h
+
+      # JDK 21 runs the scripts; the boot JDK per version is installed too.
+      - name: Set up JDKs
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            ${{ matrix.boot_jdk }}
+
+      - name: Set up Android NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 25.2.9519653
+        run: sdkmanager "ndk;25.2.9519653"
+
+      - name: Fetch OpenJDK source
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+        run: bash scripts/fetch-source.sh "${{ matrix.version }}"
+
+      # setup-java exports JAVA_HOME_<version>_X64 variables; resolve the
+      # matrix-selected boot JDK via indirect expansion.
+      - name: Configure (FIRST DRAFT)
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+          BOOT_JDK_VERSION: ${{ matrix.boot_jdk }}
+        run: |
+          BOOT_JDK_VAR="JAVA_HOME_${BOOT_JDK_VERSION}_X64"
+          export BOOT_JDK="${!BOOT_JDK_VAR}"
+          echo "boot JDK: ${BOOT_JDK}"
+          bash scripts/configure-android.sh
+
+      - name: Build image (FIRST DRAFT)
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+        run: bash scripts/build-android.sh
+
+      - name: Package binpack
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+        run: bash scripts/package-binpack.sh
+
+      - name: Upload bin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre-${{ matrix.version }}-bin-${{ matrix.arch }}
+          path: out/jre-${{ matrix.version }}/
+          if-no-files-found: error
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [8, 17, 21, 25]
+    name: "assemble-jdk${{ matrix.version }}"
+    steps:
+      - name: Download bin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jre-${{ matrix.version }}-bin-*
+          path: merged
+          merge-multiple: true
+
+      # DRAFT: the universal tarball is identical for every arch, so one
+      # arch's copy stands in for all; assert the file exists first.
+      - name: Lay out asset directory
+        run: |
+          mkdir -p "jre-${{ matrix.version }}"
+          cp merged/universal.tar.xz "jre-${{ matrix.version }}/"
+          for arch in arm arm64 x86 x86_64; do
+            cp "merged/bin-${arch}.tar.xz" "jre-${{ matrix.version }}/"
+          done
+          cp merged/version "jre-${{ matrix.version }}/"
+          ls -la "jre-${{ matrix.version }}"
+
+      - name: Stage prefixed asset names
+        run: |
+          mkdir -p "jre-${{ matrix.version }}-staged"
+          for f in universal.tar.xz bin-arm.tar.xz bin-arm64.tar.xz bin-x86.tar.xz bin-x86_64.tar.xz version; do
+            cp "jre-${{ matrix.version }}/$f" "jre-${{ matrix.version }}-staged/jre-${{ matrix.version }}-$f"
+          done
+          ls -la "jre-${{ matrix.version }}-staged"
+
+      - name: Upload assembled runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre-${{ matrix.version }}
+          path: jre-${{ matrix.version }}/
+          if-no-files-found: error
+
+      # Publish only for tag-triggered runs. GitHub assets are flat, so files
+      # are renamed with a jre-<version>- prefix to avoid cross-version
+      # collisions (universal.tar.xz would otherwise clash for all 4 runtimes).
+      - name: Publish assets to tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            jre-${{ matrix.version }}-staged/*
