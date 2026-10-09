@@ -31,9 +31,9 @@ mv jreout/lib/libfreetype.dylib.6 jreout/lib/libfreetype.dylib || echo "Move exi
 # shipped (stripped) binaries can be resolved back to source lines. Paths are
 # preserved under dizout/ so same-named sidecars (libjsig.diz in both lib/ and
 # lib/<arch>/) cannot collide, then the images are stripped as before.
-find jreout \( -name "*.diz" -o -name "*.debuginfo" -o -name "*.debug" \) -exec cp --parents {} dizout/ +
-find jdkout \( -name "*.diz" -o -name "*.debuginfo" -o -name "*.debug" \) -exec cp --parents {} dizout/ +
-find openjdk/build \( -name "*.debuginfo" -o -name "*.diz" -o -name "*.debug" \) -exec cp --parents {} dizout/ +
+find jreout \( -name "*.diz" -o -name "*.debuginfo" -o -name "*.debug" \) -exec cp --parents -t dizout/ {} +
+find jdkout \( -name "*.diz" -o -name "*.debuginfo" -o -name "*.debug" \) -exec cp --parents -t dizout/ {} +
+find openjdk/build \( -name "*.debuginfo" -o -name "*.diz" -o -name "*.debug" \) -exec cp --parents -t dizout/ {} +
 find jreout jdkout \( -name "*.diz" -o -name "*.debuginfo" -o -name "*.debug" \) -delete
 
 if [[ "$BUILD_IOS" == "1" ]]; then
