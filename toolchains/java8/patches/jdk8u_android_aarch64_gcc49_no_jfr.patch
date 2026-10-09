@@ -1,0 +1,35 @@
+Allow the legacy NDK r10e GCC 4.9 toolchain for the AArch64 Java 8 build.
+
+Android NDK r10e is the only NDK that this toolchain supports, and it ships
+GCC 4.9 for AArch64. jdk8u refuses to configure in that case because of
+JDK-8360869, where jcstress was able to crash jdk8 on aarch64 with JFR on.
+Upstream could not reproduce the crashes with GCC 5 and up, and the crashes
+were specific to JFR, so instead of dropping the legacy Android toolchain
+we gate the existing configure guard on ENABLE_JFR and build this one
+configuration with --disable-jfr (see buildjdk.sh). The guard still fails
+the configure when JFR is enabled, so a miscompiled JFR can never be built
+by accident.
+
+This patches the committed common/autoconf/generated-configure.sh, which is
+what the top-level ./configure wrapper actually executes.
+common/autoconf/toolchain.m4 is deliberately left alone: jdk8u_android.diff
+edits generated-configure.sh directly, so regenerating it via
+common/autoconf/autogen.sh would drop those Android specific edits, and
+patching only the m4 source would have no effect at build time.
+diff --git a/common/autoconf/generated-configure.sh b/common/autoconf/generated-configure.sh
+index 49a65b4..5f49041 100644
+--- a/common/autoconf/generated-configure.sh
++++ b/common/autoconf/generated-configure.sh
+@@ -41343,7 +41343,11 @@ $as_echo_n "checking for broken aarch64 gcc 4.x... " >&6; }
+       { $as_echo "$as_me:${as_lineno-$LINENO}: result: found $COMPILER_VERSION_NUMBER_MAJOR.x" >&5
+ $as_echo "found $COMPILER_VERSION_NUMBER_MAJOR.x" >&6; }
+       if test $COMPILER_VERSION_NUMBER_MAJOR -lt 5; then
+-        as_fn_error $? "GCC < 5 may incorrectly compile HotSpot on aarch64. See JDK-8360869." "$LINENO" 5
++        if test "x$ENABLE_JFR" != "xfalse"; then
++          as_fn_error $? "GCC < 5 may incorrectly compile HotSpot on aarch64. See JDK-8360869. Configure with --disable-jfr or use GCC 5+." "$LINENO" 5
++        else
++          printf '%s\n' "WARNING: GCC < 5 on aarch64 with JFR disabled; continuing. See JDK-8360869." >&2
++        fi
+       fi
+     fi
+   fi

@@ -1,87 +1,46 @@
-# EclipseJRE
+# Eclipse JRE pipeline
 
-Pipeline for cross-compiling OpenJDK 8/17/21/25 runtimes for Android
-(arm, arm64, x86, x86_64) in the exact "binpack" layout the Eclipse Launcher
-consumes from its assets.
+Builds the Android OpenJDK runtimes (**8, 17, 21, and 25**) that ship inside
+Eclipse Launcher. Scripts, patch sets and repacking recipes live in this
+repository; OpenJDK source and the Android NDK are fetched during the build.
 
-**Status: DRAFT skeleton.** The workflow and scripts are written to be run and
-iterated via CI; no successful build has been produced yet. Expect the
-configure flags and the binpack split rules to need fixes on the first runs.
+## Run or rerun a build
 
-## Artifact contract
+1. Open **Actions** → **Eclipse JRE pipeline**.
+2. In the **Run workflow** form, select an existing `jres-v*` tag in the
+   **Use workflow from** menu and enter the tag to publish to.
+3. Click **Run workflow**.
 
-The launcher (`UnpackJreTask` + `MultiRTUtils.installRuntimeNamedBinpack`)
-expects, per runtime, these files under
-`EclipseLauncher/src/main/assets/components/jre-<version>/`:
+The normal build and packaging steps run. On success, the JRE ZIPs, per-ABI
+`bin-<arch>.tar.xz` components, `universal.tar.xz`, manifests and checksums
+appear on that tag's **Releases** page.
 
-| File | Content |
+## Make a new bundle
+
+Push a new tag, for example `jres-v1.0.0`. The workflow starts automatically
+and publishes after all 15 architecture builds pass.
+
+## Outputs
+
+| Java | Android ABIs |
 |---|---|
-| `universal.tar.xz` | arch-independent runtime files (extracted first) |
-| `bin-arm.tar.xz` | 32-bit ARM files (`bin/` launchers + arch-specific libs), extracted over the universal tree |
-| `bin-arm64.tar.xz` | same for AArch64 |
-| `bin-x86.tar.xz` | same for 32-bit x86 |
-| `bin-x86_64.tar.xz` | same for x86-64 |
-| `version` | opaque text stamp compared against the installed runtime; any changing value works (date or source commit) |
+| 8, 17, 21 | `arm` (ARMv7), `arm64`, `x86`, `x86_64` |
+| 25 | `arm` (ARMv7), `arm64`, `x86_64` |
 
-The per-ABI APK pruning in `EclipseLauncher/build.gradle.kts` keeps exactly
-`version`, `universal*`, and `bin-<arch>.tar.xz` for split builds, so the file
-names above are load-bearing.
-
-After extraction the launcher renames `libfreetype.so.6` to `libfreetype.so`
-and drops a dummy `libawt_xawt.so` (`MultiRTUtils.postPrepare`); no
-convention change is needed for those on our side.
-
-## Sources
-
-| Runtime | Source repo | Notes |
-|---|---|---|
-| JDK 8 | https://github.com/openjdk/jdk8u | needs JDK 8 boot JDK |
-| JDK 17 | https://github.com/openjdk/jdk17u | needs JDK 16/17 boot JDK |
-| JDK 21 | https://github.com/openjdk/jdk21u | needs JDK 20/21 boot JDK |
-| JDK 25 | https://github.com/openjdk/jdk25u | needs JDK 24 boot JDK |
-
-Toolchain: Android NDK 25.2.9519653, `--openjdk-target` cross builds with the
-NDK clang compilers, headless-only AWT, client VM for JDK 8 and server VM for
-17+ (both options are drafts - see `docs/plan.md`).
+Java 8 uses NDK r10e; Java 17, 21 and 25 use r28c. Exact source pins are
+recorded in `build-inputs.json`, and every build writes a per-cell provenance
+manifest that is published as `BUILD-MANIFEST.txt`.
 
 ## Repository layout
 
-```
-docs/plan.md            full pipeline plan and open questions
-scripts/env.sh          common environment (triples, NDK paths)
-scripts/fetch-source.sh clone the OpenJDK source for a version
-scripts/configure-android.sh  autoconf cross-configure  [FIRST DRAFT]
-scripts/build-android.sh      make the JDK image        [FIRST DRAFT]
-scripts/package-binpack.sh    split universal/bin tarballs, xz -T0, version stamp
-.github/workflows/build-jre.yml  matrix over version x arch; tag-triggered publishing
-```
+- `toolchains/java8/` — Java 8 recipe: r10e standalone toolchain, bionic port
+  patch set, per-ABI build drivers, JRE repack into the launcher's
+  `components/jre-8/` layout.
+- `toolchains/java17-25/` — Java 17/21/25 recipe: NDK llvm clang toolchain,
+  per-version Android patch sets, jlink-based JRE assembly, repack into
+  `components/jre-<version>/`.
+- `scripts/` — bundle verification, provenance manifests and release checksum
+  helpers shared by all cells.
 
-## Building
-
-CI is the only supported build path for now:
-
-- manual: run the `build-jre` workflow from the Actions tab
-  (workflow_dispatch)
-- automatic: push a tag matching `jre-*`
-
-Each matrix cell (version x arch) builds one `bin-<arch>.tar.xz`; the
-`assemble` job merges everything into the per-version asset layout and (on
-tags) attaches the files to the GitHub publish job under
-`jre-<version>-*` names. The app repo pins those URLs and copies the files
-into its `assets/components/jre-<version>/` directory.
-
-Local iteration is possible by running the `scripts/` in order inside an
-Ubuntu container with the NDK installed, but that is not documented end-to-end
-yet - CI runs are the feedback loop.
-
-## Known open items
-
-- The universal/bin file split must be validated against the launcher's
-  extraction order (universal first, then bin overlaid).
-- freetype: bundled vs system, and the `.so.6` rename contract.
-- JDK 8 pack200 handling (`unpack200` runs from the launcher's native lib
-  dir).
-- CACIO/AWT headless classes must land in the universal tarball
-  (launcher adds caciocavallo via bootclasspath at launch time).
-
-See `docs/plan.md` for the full list.
+Builds can take hours. See `BUILD-NOTICES.md` for the licensing and
+redistribution status of the downloaded inputs.

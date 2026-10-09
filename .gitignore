@@ -1,9 +1,23 @@
-# Build outputs
-out/
-staging/
-openjdk-src/
+# Native OpenJDK builds and archives
+build/
+openjdk/
+openjdk-17/
+openjdk-21/
+openjdk-25/
+android-ndk*/
 *.tar.xz
-
-# IDE
-.idea/
-.vscode/
+*.zip
+*.log
+config.log
+build-manifest-*.txt
+release-assets/
+incoming/
+selftest-bin/
+freetype-*/
+cups-*/
+dummy_libs/
+jdkout/
+jreout/
+dizout/
+dSYM-temp/
+termux-elf-cleaner/

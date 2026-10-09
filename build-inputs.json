@@ -1,0 +1,23 @@
+{
+  "java_8": {
+    "local_recipe": "toolchains/java8",
+    "android_ndk": "r10e",
+    "android_api": 21,
+    "abis": ["arm", "arm64", "x86", "x86_64"]
+  },
+  "java_17_21_25": {
+    "local_recipe": "toolchains/java17-25",
+    "android_ndk": "r28c",
+    "android_api": 21,
+    "openjdk_inputs": {
+      "17": "jdk17u source branch; exact commit captured at build time",
+      "21": "jdk21u tag jdk-21.0.12+5",
+      "25": "jdk25u tag jdk-25.0.4+4"
+    },
+    "abis": {
+      "17": ["arm", "arm64", "x86", "x86_64"],
+      "21": ["arm", "arm64", "x86", "x86_64"],
+      "25": ["arm", "arm64", "x86_64"]
+    }
+  }
+}

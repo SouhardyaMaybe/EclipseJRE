@@ -1,194 +1,339 @@
-name: build-jre
-
-# DRAFT skeleton: cross-compiles OpenJDK 8/17/21/25 for Android and packages
-# the launcher's binpack layout. Expect per-cell iteration on first runs.
+name: Eclipse JRE pipeline
 
 on:
   workflow_dispatch:
     inputs:
-      only_version:
-        description: "Restrict to one runtime version (8/17/21/25, or empty for all)"
+      release_tag:
+        description: "GitHub Release tag to create/update (for example: jres-v1.0.0)"
+        required: true
+        type: string
+      package_selftest:
+        description: "Skip the JDK builds and run only packaging/release against synthetic fixtures, publishing to a throwaway tag"
         required: false
-        default: ""
+        default: false
+        type: boolean
   push:
     tags:
-      - "jre-*"
+      - "jres-v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: android-jres-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Java ${{ matrix.version }} / ${{ matrix.arch }}
+    if: ${{ !inputs.package_selftest }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         version: [8, 17, 21, 25]
-        arch: [arm, arm64, x86, x86_64]
-        # JDK 25 dropped 32-bit x86 entirely (no hotspot), which matches the
-        # shipped runtime layout: jre-25 has no bin-x86.
+        arch: [aarch32, aarch64, x86, x86_64]
         exclude:
           - version: 25
             arch: x86
-        include:
-          - version: 8
-            boot_jdk: "8"
-          - version: 17
-            boot_jdk: "17"
-          - version: 21
-            boot_jdk: "21"
-          - version: 25
-            boot_jdk: "24"
-    name: "jdk${{ matrix.version }}-${{ matrix.arch }}"
+
     steps:
-      - name: Checkout
+      - name: Check out this repository
         uses: actions/checkout@v4
 
-      - name: Free disk space
+      # OpenJDK source trees, two NDKs and full build trees per job; the
+      # preinstalled SDK/dotnet/CodeQL payloads do not participate in these
+      # builds, so reclaim their space up front instead of risking a disk
+      # exhaustion hours into a native build.
+      - name: Free runner disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
-          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
 
-      # SDK step runs FIRST: sdkmanager requires JDK 17+, while the matrix
-      # later installs boot JDKs as old as 8 (the last setup-java entry wins
-      # JAVA_HOME and would break these steps).
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Java 8 build JDK
+        if: matrix.version == 8
+        uses: actions/setup-java@v4
         with:
-          packages: platform-tools
+          distribution: zulu
+          java-version: "8"
 
-      # Compose the JDK list for this cell: 21 runs the pipeline scripts, the
-      # boot JDK compiles the tree, and the target feature release provides
-      # the jlink used when packaging 17+ runtimes.
-      - name: Compose JDK list
-        id: jdks
-        run: |
-          {
-            echo "versions<<JDK_EOF"
-            printf '%s\n' "21" "${{ matrix.boot_jdk }}" "${{ matrix.version }}" | awk '!seen[$0]++'
-            echo "JDK_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Set up JDKs
+      - name: Set up Java 17/21/25 build JDK
+        if: matrix.version != 8
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ steps.jdks.outputs.versions }}
+          java-version: ${{ matrix.version }}
 
-      - name: Install build dependencies
+      - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang libasound2-dev libfontconfig1-dev pkg-config file xz-utils unzip
+          sudo apt-get install -y \
+            autoconf python3 python-is-python3 unzip zip \
+            systemtap-sdt-dev gcc-multilib g++-multilib \
+            libxtst-dev libasound2-dev libelf-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxrender-dev libxt-dev \
+            clang lld cmake
 
-      - name: Prepare dependencies (NDK, toolchain, cups, freetype)
+      - name: Build runtime
         env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: bash scripts/prepare-deps.sh
-
-      - name: Fetch OpenJDK source
-        env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: bash scripts/fetch-source.sh "${{ matrix.version }}"
-
-      - name: Apply Android port fixes
-        env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: bash scripts/port-fixes.sh
-
-      # setup-java exports JAVA_HOME_<version>_X64 variables; resolve the
-      # matrix-selected boot JDK via indirect expansion.
-      - name: Configure
-        env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-          BOOT_JDK_VERSION: ${{ matrix.boot_jdk }}
+          BUILD_VERSION: ${{ matrix.version }}
+          BUILD_ARCH: ${{ matrix.arch }}
+          # Blank out the runner's preinstalled NDK so the recipe downloads the
+          # pinned r28c itself; build provenance records r28c for these cells
+          # and must not silently describe whichever NDK the image ships.
+          ANDROID_NDK_HOME: ""
         run: |
-          BOOT_JDK_VAR="JAVA_HOME_${BOOT_JDK_VERSION}_X64"
-          export BOOT_JDK="${!BOOT_JDK_VAR}"
-          echo "boot JDK: ${BOOT_JDK}"
-          bash scripts/configure-android.sh
+          set -euo pipefail
+          if [[ "$BUILD_VERSION" == "8" ]]; then
+            cd toolchains/java8
+            bash "ci_build_arch_${BUILD_ARCH}.sh"
+          else
+            cd toolchains/java17-25
+            export TARGET_VERSION="$BUILD_VERSION"
+            bash "1_ci_build_arch_${BUILD_ARCH}.sh"
+          fi
 
-      - name: Build image
-        env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: bash scripts/build-android.sh
-
-      - name: Package binpack
-        env:
-          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
-          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: |
-          JLINK_VAR="JAVA_HOME_${{ matrix.version }}_X64"
-          export JLINK_HOME="${!JLINK_VAR:-}"
-          bash scripts/package-binpack.sh
-
-      - name: Upload bin artifact
+      - name: Upload build diagnostics on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: jre-${{ matrix.version }}-bin-${{ matrix.arch }}
-          path: out/jre-${{ matrix.version }}/
-          if-no-files-found: error
+          name: failure-logs-jre${{ matrix.version }}-${{ matrix.arch }}
+          path: |
+            toolchains/java8/openjdk/build/**/failure-logs/**
+            toolchains/java8/openjdk/build/**/config.log
+            toolchains/java8/openjdk/build/**/build.log
+            toolchains/java17-25/openjdk-${{ matrix.version }}/build/**/failure-logs/**
+            toolchains/java17-25/openjdk-${{ matrix.version }}/build/**/config.log
+            toolchains/java17-25/openjdk-${{ matrix.version }}/build/**/build.log
+          if-no-files-found: ignore
+          retention-days: 3
 
-  assemble:
+      - name: Record build provenance
+        env:
+          BUILD_VERSION: ${{ matrix.version }}
+          BUILD_ARCH: ${{ matrix.arch }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_VERSION" == "8" ]]; then
+            recipe_path=toolchains/java8
+            source_dir="$GITHUB_WORKSPACE/toolchains/java8/openjdk"
+            ndk_version=r10e
+          else
+            recipe_path=toolchains/java17-25
+            source_dir="$GITHUB_WORKSPACE/toolchains/java17-25/openjdk-$BUILD_VERSION"
+            ndk_version=r28c
+          fi
+          recipe_sha256="$(git archive "$SOURCE_COMMIT" "$recipe_path" | sha256sum | cut -d' ' -f1)"
+          scripts/write-build-manifest.sh \
+            "$BUILD_VERSION" "$BUILD_ARCH" "$SOURCE_COMMIT" \
+            "$recipe_sha256" "$source_dir" "$ndk_version" \
+            "$GITHUB_WORKSPACE/build-manifest-jre${BUILD_VERSION}-${BUILD_ARCH}.txt"
+
+      - name: Upload per-architecture JRE build
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre${{ matrix.version }}-${{ matrix.arch }}
+          path: |
+            toolchains/java8/jre8-*.tar.xz
+            toolchains/java8/debuginfo-*.tar.xz
+            toolchains/java17-25/jre${{ matrix.version }}-*.tar.xz
+            build-manifest-jre${{ matrix.version }}-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          # Transport only: the same bytes are published on the release page.
+          # Kept a few days so a failed release job can still be diagnosed.
+          retention-days: 3
+
+  package-and-release:
+    name: Package runtime bundles and publish GitHub Release
     needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        version: [8, 17, 21, 25]
-    name: "assemble-jdk${{ matrix.version }}"
+    if: ${{ always() && (needs.build.result == 'success' || inputs.package_selftest) }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: write
     steps:
-      - name: Download bin artifacts
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Download all architecture builds
+        if: ${{ !inputs.package_selftest }}
         uses: actions/download-artifact@v4
         with:
-          pattern: jre-${{ matrix.version }}-bin-*
-          path: merged
+          pattern: jre*-*
+          path: incoming
           merge-multiple: true
 
-      # The universal tarball is identical for every arch, so one arch's copy
-      # stands in for all; assert it exists first. Arch coverage differs per
-      # runtime (jre-25 has no bin-x86), so missing arch files are skipped.
-      - name: Lay out asset directory
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y xz-utils zip
+
+      - name: Set up Java 8 pack200 for legacy JRE 8 repacking
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "8"
+
+      - name: Resolve release tag
+        id: release
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          PACKAGE_SELFTEST: ${{ inputs.package_selftest }}
         run: |
           set -euo pipefail
-          mkdir -p "jre-${{ matrix.version }}"
-          cp merged/universal.tar.xz "jre-${{ matrix.version }}/"
-          for arch in arm arm64 x86 x86_64; do
-            if [ -f "merged/bin-${arch}.tar.xz" ]; then
-              cp "merged/bin-${arch}.tar.xz" "jre-${{ matrix.version }}/"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="$INPUT_RELEASE_TAG"
+          else
+            RELEASE_TAG="$REF_NAME"
+          fi
+          # Self-test mode republishes synthetic bytes, so keep it off the real tag.
+          if [[ "$PACKAGE_SELFTEST" == "true" ]]; then
+            RELEASE_TAG="$RELEASE_TAG-selftest"
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^jres-v[0-9A-Za-z._-]+$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            echo "Expected format like jres-v1.0.0" >&2
+            exit 1
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Generate packaging self-test fixtures
+        if: ${{ inputs.package_selftest }}
+        run: |
+          set -euo pipefail
+          # The build matrix is skipped in this mode, so synthesize inputs with the
+          # filenames and internal layout the repack scripts consume. The repack,
+          # verify, manifest and upload steps below then run unmodified, so
+          # packaging regressions surface without 15 OpenJDK builds.
+          scripts/make-selftest-fixtures.sh \
+            "$GITHUB_WORKSPACE/incoming" "$GITHUB_WORKSPACE/selftest-bin"
+          echo "$GITHUB_WORKSPACE/selftest-bin" >> "$GITHUB_PATH"
+
+      - name: Repack, verify, checksum, and prepare notes
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          manifest_count="$(find incoming -type f -name 'build-manifest-jre*.txt' | wc -l)"
+          if [[ "$manifest_count" -ne 15 ]]; then
+            echo "Expected 15 per-architecture build manifests, found $manifest_count" >&2
+            exit 1
+          fi
+          # Collect the components of each bundle here so the on-demand client
+          # assets are produced next to the bundle that defines what belongs in
+          # them, instead of by a second job that would have to re-derive it.
+          for version in 8 17 21 25; do
+            target_dir="$GITHUB_WORKSPACE/release-assets/jre-$version"
+            mkdir -p "$target_dir"
+            if [[ "$version" == "8" ]]; then
+              bash toolchains/java8/repackjre.sh "$GITHUB_WORKSPACE/incoming" "$target_dir"
+            else
+              export TARGET_VERSION="$version"
+              bash toolchains/java17-25/9_repackjre.sh "$GITHUB_WORKSPACE/incoming" "$target_dir"
             fi
+            scripts/verify-bundle.sh "$version" "$target_dir"
+            zip -j -q "$GITHUB_WORKSPACE/release-assets/jre${version}-android-multiarch.zip" "$target_dir"/*
+            # Publish universal.tar.xz and each bin-<arch>.tar.xz individually so a
+            # client can fetch only what its device needs instead of the whole
+            # ~42 MB ZIP. Assets share one flat namespace on a release, hence the
+            # jre<N>- prefix. universal.tar.xz is the largest single component
+            # (~22 MB) and would otherwise be reachable only by unpacking the ZIP.
+            cp -p "$target_dir"/universal.tar.xz \
+              "release-assets/jre${version}-universal.tar.xz"
+            for component in "$target_dir"/bin-*.tar.xz; do
+              cp -p "$component" "release-assets/jre${version}-$(basename "$component")"
+            done
+            # `version` inside the bundle is a build identifier (source commit or
+            # build date), not a manifest, so it stays unpublished; the per-version
+            # manifest below carries it as build_id alongside the digests.
+            build_id="$(cat "$target_dir/version")"
+            scripts/write-multiarch-manifest.sh "$version" release-assets \
+              "$build_id" "$RELEASE_TAG" "release-assets/jre${version}-multiarch.json"
           done
-          cp merged/version "jre-${{ matrix.version }}/"
-          ls -la "jre-${{ matrix.version }}"
+          # A client that trusts the manifest must not be able to trust a
+          # manifest describing assets the release does not carry. Check every
+          # name and digest it names against what is actually staged for upload.
+          scripts/verify-multiarch-manifests.sh release-assets 8 17 21 25
+          find incoming -type f -name 'build-manifest-jre*.txt' -print0 | sort -z | xargs -0 cat > release-assets/BUILD-MANIFEST.txt
+          printf 'Source repository commit: %s\nRelease tag: %s\n' "$SOURCE_COMMIT" "$RELEASE_TAG" >> release-assets/BUILD-MANIFEST.txt
+          # Publish the raw per-architecture build outputs next to the repacked
+          # bundles so the release page is the single place to download from,
+          # instead of relying on short-lived workflow artifacts. The uploaded
+          # artifacts keep their repo-relative paths (toolchains/java8/... and
+          # toolchains/java17-25/...), so this has to be a recursive search;
+          # the work dirs are skipped since they are repack scratch space.
+          mapfile -t per_arch_tarballs < <(find incoming -type f -name 'jre*.tar.xz' \
+            -not -path 'incoming/work*' -not -path 'incoming/work1*' | sort)
+          if [[ "${#per_arch_tarballs[@]}" -ne 15 ]]; then
+            echo "Expected 15 per-architecture tarballs, found ${#per_arch_tarballs[@]}" >&2
+            printf '%s\n' "${per_arch_tarballs[@]}" >&2
+            exit 1
+          fi
+          cp -p "${per_arch_tarballs[@]}" release-assets/
+          # Java 8 builds also emit debuginfo sidecars; they are mandatory so a
+          # release can never silently ship binaries nobody can symbolize.
+          mapfile -t debuginfo_tarballs < <(find incoming -type f -name 'debuginfo-*.tar.xz' \
+            -not -path 'incoming/work*' -not -path 'incoming/work1*' | sort)
+          if [[ "${#debuginfo_tarballs[@]}" -ne 4 ]]; then
+            echo "Expected 4 java8 debuginfo tarballs, found ${#debuginfo_tarballs[@]}" >&2
+            printf '%s\n' "${debuginfo_tarballs[@]}" >&2
+            exit 1
+          fi
+          cp -p "${debuginfo_tarballs[@]}" release-assets/
+          # jre*.tar.xz covers the raw per-arch tarballs and the individual
+          # universal/bin- components; the manifests are listed separately.
+          (cd release-assets && sha256sum jre*-android-multiarch.zip jre*.tar.xz debuginfo*.tar.xz jre*-multiarch.json BUILD-MANIFEST.txt > SHA256SUMS.txt)
+          cat > release-assets/RELEASE-NOTES.md <<'NOTES'
+          Android OpenJDK runtime bundles for Eclipse Launcher.
 
-      - name: Stage prefixed asset names
+          The `jre<N>-android-multiarch.zip` bundles contain `universal.tar.xz`, ABI-specific `bin-*.tar.xz` archives, and a `version` marker. Extract into the corresponding `components/jre-<version>/` directory.
+
+          For on-demand downloads, fetch `jre<N>-multiarch.json` first. It is a few hundred bytes and gives you the current `build_id` plus the name, SHA-256 and size of every component for that version. Then download only the components you need, which are published individually under the same names the manifest lists:
+
+          - `jre<N>-universal.tar.xz` — the architecture-independent part.
+          - `jre<N>-bin-<arch>.tar.xz` — this device's architecture, where `<arch>` is `arm`, `arm64`, `x86` or `x86_64`. Match on the manifest's `android_abi` against `Build.SUPPORTED_ABIS`. Java 25 does not include 32-bit x86.
+
+          These are the same bytes the ZIP contains, so the two download paths are interchangeable. The `version` marker stays inside the ZIP only: it is a build identifier, not a manifest.
+
+          The `jre<N>-<arch>-<date>-release.tar.xz` files are the raw per-architecture build outputs before repacking. Use these only if you need an un-repacked tree (for example to inspect a single ABI build). Java 25 does not include 32-bit x86.
+
+          The AArch64 Java 8 runtime is built from NDK r10e, which ships GCC 4.9, and is therefore compiled with JFR disabled. See JDK-8360869.
+
+          The `debuginfo-jre8-*.tar.xz` archives carry the unstripped debug sidecars (`.debuginfo`/`.diz`) produced by the Java 8 builds, for resolving native crash addresses back to source lines.
+
+          Review `BUILD-MANIFEST.txt` for source revisions and `SHA256SUMS.txt` for integrity checks.
+          NOTES
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          mkdir -p "jre-${{ matrix.version }}-staged"
-          for f in "jre-${{ matrix.version }}"/*; do
-            cp "$f" "jre-${{ matrix.version }}-staged/jre-${{ matrix.version }}-$(basename "$f")"
+          assets=(release-assets/jre*-android-multiarch.zip release-assets/jre*.tar.xz release-assets/debuginfo*.tar.xz release-assets/jre*-multiarch.json release-assets/BUILD-MANIFEST.txt release-assets/SHA256SUMS.txt)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --title "Eclipse JRE bundles ${RELEASE_TAG}" \
+              --notes-file release-assets/RELEASE-NOTES.md
+          fi
+
+      - name: Delete successful build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[].id' |
+          while read -r artifact_id; do
+            [[ -n "$artifact_id" ]] || continue
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
           done
-          ls -la "jre-${{ matrix.version }}-staged"
-
-      - name: Upload assembled runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: jre-${{ matrix.version }}
-          path: jre-${{ matrix.version }}/
-          if-no-files-found: error
-
-      # Publish only for tag-triggered runs. GitHub assets are flat, so files
-      # are renamed with a jre-<version>- prefix to avoid cross-version
-      # collisions (universal.tar.xz would otherwise clash for all 4 runtimes).
-      - name: Publish assets to tag
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            jre-${{ matrix.version }}-staged/*
