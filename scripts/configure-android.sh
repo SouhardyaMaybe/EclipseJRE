@@ -13,6 +13,15 @@ BOOT_JDK="${BOOT_JDK:?set BOOT_JDK to the boot JDK home for this version}"
 
 cd "${SRC_DIR}"
 
+# The bundled config.sub predates Android as a target system and rejects all
+# four triples ("system 'android' not recognized"). Swap in the vendored
+# modern GNU config.sub, which canonicalizes them cleanly; covers both the
+# jdk8u (common/autoconf) and 17+ (make/autoconf) layouts.
+while IFS= read -r -d '' bundled; do
+    cp "${SCRIPT_DIR}/config.sub" "${bundled}"
+    echo "replaced ${bundled} with modern GNU config.sub"
+done < <(find "${SRC_DIR}" -path "*/build-aux/config.sub" -print0)
+
 # Sanity checks: the NDK clang wrappers must exist.
 for tool in "${CC}" "${CXX}" "${AR}" "${RANLIB}" "${STRIP}"; do
     if [[ ! -x "${tool}" ]]; then
@@ -46,7 +55,7 @@ else
     CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" STRIP="${STRIP}" \
     bash configure "${COMMON_FLAGS[@]}" \
         --enable-headless-only \
-        --disable-werror \
+        --disable-warnings-as-errors \
         --disable-dtrace \
         --disable-precompiled-headers \
         --with-version-opt="eclipse$(date -u +%Y%m%d)" \
