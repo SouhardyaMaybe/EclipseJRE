@@ -25,6 +25,7 @@ ECLIPSE_JRE_ARCH="${ECLIPSE_JRE_ARCH:?set ECLIPSE_JRE_ARCH to arm, arm64, x86 or
 case "${ECLIPSE_JRE_ARCH}" in
     arm)
         TRIPLE="arm-linux-android"
+        # clang's arm32 Android wrapper prefix differs from the binutils one
         R10E_ARCH="arm"
         R10E_PREFIX="arm-linux-androideabi"
         ;;
@@ -49,6 +50,13 @@ case "${ECLIPSE_JRE_ARCH}" in
         ;;
 esac
 OPENJDK_TARGET="${TRIPLE}"
+# NDK clang target-prefix wrappers: arm32 uses armv7a-linux-androideabi, all
+# other arches share the binutils triple.
+if [[ "${ECLIPSE_JRE_ARCH}" == "arm" ]]; then
+    CLANG_PREFIX="armv7a-linux-androideabi"
+else
+    CLANG_PREFIX="${TRIPLE}"
+fi
 
 WORKSPACE="${WORKSPACE:-${GITHUB_WORKSPACE:-$(pwd)}}"
 SRC_DIR="${SRC_DIR:-${WORKSPACE}/openjdk-src}"
@@ -80,17 +88,17 @@ else
     # exists; server is the only hotspot variant on Android targets).
     TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
     TOOLCHAIN_TYPE="clang"
-    CC="${TOOLCHAIN}/${TRIPLE}${ANDROID_API}-clang"
-    CXX="${TOOLCHAIN}/${TRIPLE}${ANDROID_API}-clang++"
-    AR="${TOOLCHAIN}/llvm-ar"
-    RANLIB="${TOOLCHAIN}/llvm-ranlib"
-    STRIP="${TOOLCHAIN}/llvm-strip"
+    CC="${TOOLCHAIN}/bin/${CLANG_PREFIX}${ANDROID_API}-clang"
+    CXX="${TOOLCHAIN}/bin/${CLANG_PREFIX}${ANDROID_API}-clang++"
+    AR="${TOOLCHAIN}/bin/llvm-ar"
+    RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
+    STRIP="${TOOLCHAIN}/bin/llvm-strip"
     JVM_VARIANT="${JVM_VARIANT:-server}"
 fi
 
 export ANDROID_NDK_VERSION ANDROID_SDK NDK_ROOT ANDROID_API
 export ECLIPSE_JRE_VERSION ECLIPSE_JRE_ARCH
-export TRIPLE OPENJDK_TARGET R10E_ARCH R10E_PREFIX
+export TRIPLE OPENJDK_TARGET CLANG_PREFIX R10E_ARCH R10E_PREFIX
 export WORKSPACE SRC_DIR OUT_DIR DEPS_DIR TOOLCHAIN_ROOT
 export CUPS_DIR FREETYPE_PREFIX DUMMY_LIBS
 export TOOLCHAIN TOOLCHAIN_TYPE CC CXX AR RANLIB STRIP JVM_VARIANT

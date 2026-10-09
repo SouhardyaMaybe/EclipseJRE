@@ -70,8 +70,10 @@ if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
         || conf_status=$?
 else
     # JDK 17+ autoconf: clang toolchain, headless-only image, warnings never
-    # fatal for cross builds, no dtrace, no precompiled headers.
-    EXTRA_FLAGS="--target=${TRIPLE}${ANDROID_API} -fPIC"
+    # fatal for cross builds, no dtrace, no precompiled headers. The clang
+    # wrapper already carries --target; repeating it (identical) keeps
+    # non-wrapper invocations on the same triple.
+    EXTRA_FLAGS="--target=${CLANG_PREFIX}${ANDROID_API} -fPIC"
     CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" STRIP="${STRIP}" \
     bash configure "${COMMON_FLAGS[@]}" \
         --with-toolchain-type=clang \

@@ -56,7 +56,13 @@ if [[ ! -x "${TOOLCHAIN}/bin/${R10E_PREFIX}-gcc" ]]; then
     mkdir -p "${work}"
     curl -fL --retry 3 -o "${work}/ndk-r10e.zip" "${R10E_ZIP_URL}"
     unzip -q "${work}/ndk-r10e.zip" -d "${work}"
-    bash "${work}/android-ndk-r10e/build/tools/make-standalone-toolchain.sh" \
+    # r10e's helper validates ANDROID_NDK_ROOT/ANDROID_NDK_HOME before it
+    # self-locates; the runner exports a stale one, so pin both to the NDK
+    # we just extracted.
+    ndk_root="${work}/android-ndk-r10e"
+    test -d "${ndk_root}"
+    ANDROID_NDK_ROOT="${ndk_root}" ANDROID_NDK_HOME="${ndk_root}" \
+    bash "${ndk_root}/build/tools/make-standalone-toolchain.sh" \
         --arch="${R10E_ARCH}" \
         --platform="android-${ANDROID_API}" \
         --install-dir="${TOOLCHAIN}"
