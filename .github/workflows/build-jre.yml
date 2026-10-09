@@ -26,6 +26,11 @@ jobs:
       matrix:
         version: [8, 17, 21, 25]
         arch: [arm, arm64, x86, x86_64]
+        # JDK 25 dropped 32-bit x86 entirely (no hotspot), which matches the
+        # shipped runtime layout: jre-25 has no bin-x86.
+        exclude:
+          - version: 25
+            arch: x86
         include:
           - version: 8
             boot_jdk: "8"
@@ -45,25 +50,43 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
           df -h
 
-      # SDK/NDK steps run FIRST: sdkmanager requires JDK 17+, while the
-      # matrix later installs boot JDKs as old as 8 (the last setup-java
-      # entry wins JAVA_HOME and would break these steps).
-      - name: Set up Android SDK and NDK
+      # SDK step runs FIRST: sdkmanager requires JDK 17+, while the matrix
+      # later installs boot JDKs as old as 8 (the last setup-java entry wins
+      # JAVA_HOME and would break these steps).
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
 
-      - name: Install Android NDK 25.2.9519653
-        run: sdkmanager "ndk;25.2.9519653"
+      # Compose the JDK list for this cell: 21 runs the pipeline scripts, the
+      # boot JDK compiles the tree, and the target feature release provides
+      # the jlink used when packaging 17+ runtimes.
+      - name: Compose JDK list
+        id: jdks
+        run: |
+          {
+            echo "versions<<JDK_EOF"
+            printf '%s\n' "21" "${{ matrix.boot_jdk }}" "${{ matrix.version }}" | awk '!seen[$0]++'
+            echo "JDK_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      # JDK 21 runs the scripts; the boot JDK per version is installed too.
       - name: Set up JDKs
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: |
-            21
-            ${{ matrix.boot_jdk }}
+          java-version: ${{ steps.jdks.outputs.versions }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev pkg-config file xz-utils unzip
+
+      - name: Prepare dependencies (NDK, toolchain, cups, freetype)
+        env:
+          ECLIPSE_JRE_VERSION: ${{ matrix.version }}
+          ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
+        run: bash scripts/prepare-deps.sh
 
       - name: Fetch OpenJDK source
         env:
@@ -94,7 +117,10 @@ jobs:
         env:
           ECLIPSE_JRE_VERSION: ${{ matrix.version }}
           ECLIPSE_JRE_ARCH: ${{ matrix.arch }}
-        run: bash scripts/package-binpack.sh
+        run: |
+          JLINK_VAR="JAVA_HOME_${{ matrix.version }}_X64"
+          export JLINK_HOME="${!JLINK_VAR:-}"
+          bash scripts/package-binpack.sh
 
       - name: Upload bin artifact
         uses: actions/upload-artifact@v4
@@ -119,23 +145,28 @@ jobs:
           path: merged
           merge-multiple: true
 
-      # DRAFT: the universal tarball is identical for every arch, so one
-      # arch's copy stands in for all; assert the file exists first.
+      # The universal tarball is identical for every arch, so one arch's copy
+      # stands in for all; assert it exists first. Arch coverage differs per
+      # runtime (jre-25 has no bin-x86), so missing arch files are skipped.
       - name: Lay out asset directory
         run: |
+          set -euo pipefail
           mkdir -p "jre-${{ matrix.version }}"
           cp merged/universal.tar.xz "jre-${{ matrix.version }}/"
           for arch in arm arm64 x86 x86_64; do
-            cp "merged/bin-${arch}.tar.xz" "jre-${{ matrix.version }}/"
+            if [ -f "merged/bin-${arch}.tar.xz" ]; then
+              cp "merged/bin-${arch}.tar.xz" "jre-${{ matrix.version }}/"
+            fi
           done
           cp merged/version "jre-${{ matrix.version }}/"
           ls -la "jre-${{ matrix.version }}"
 
       - name: Stage prefixed asset names
         run: |
+          set -euo pipefail
           mkdir -p "jre-${{ matrix.version }}-staged"
-          for f in universal.tar.xz bin-arm.tar.xz bin-arm64.tar.xz bin-x86.tar.xz bin-x86_64.tar.xz version; do
-            cp "jre-${{ matrix.version }}/$f" "jre-${{ matrix.version }}-staged/jre-${{ matrix.version }}-$f"
+          for f in "jre-${{ matrix.version }}"/*; do
+            cp "$f" "jre-${{ matrix.version }}-staged/jre-${{ matrix.version }}-$(basename "$f")"
           done
           ls -la "jre-${{ matrix.version }}-staged"
 
