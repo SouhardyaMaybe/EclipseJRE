@@ -45,6 +45,17 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
           df -h
 
+      # SDK/NDK steps run FIRST: sdkmanager requires JDK 17+, while the
+      # matrix later installs boot JDKs as old as 8 (the last setup-java
+      # entry wins JAVA_HOME and would break these steps).
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android NDK 25.2.9519653
+        run: sdkmanager "ndk;25.2.9519653"
+
       # JDK 21 runs the scripts; the boot JDK per version is installed too.
       - name: Set up JDKs
         uses: actions/setup-java@v4
@@ -53,12 +64,6 @@ jobs:
           java-version: |
             21
             ${{ matrix.boot_jdk }}
-
-      - name: Set up Android NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK 25.2.9519653
-        run: sdkmanager "ndk;25.2.9519653"
 
       - name: Fetch OpenJDK source
         env:
