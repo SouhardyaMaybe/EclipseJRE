@@ -114,6 +114,7 @@ else
         --disable-dtrace \
         --disable-precompiled-headers \
         --with-freetype=bundled \
+        --with-cups-include="${CUPS_DIR}" \
         --with-version-opt="eclipse$(date -u +%Y%m%d)" \
         --with-extra-cflags="${EXTRA_FLAGS}" \
         --with-extra-cxxflags="${EXTRA_FLAGS}" \

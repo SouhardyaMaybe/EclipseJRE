@@ -26,10 +26,17 @@ fi
 BUILD_DIR="$(dirname "${SPEC_GMK}")"
 echo "building in ${BUILD_DIR} (${JVM_VARIANT} VM, ${ECLIPSE_JRE_ARCH})"
 
-# Parallelism goes through JOBS only: jdk8's Main.gmk hard-rejects -j
-# ("make -j is not supported, use make JOBS=n") and jdk17+'s Init.gmk
-# derives its -j from $(JOBS) (serial when empty).
-make -C "${BUILD_DIR}" JOBS="${JOBS}" images
+# Two build-invocation constraints:
+# - Parallelism goes through JOBS only: jdk8's Main.gmk hard-rejects -j
+#   ("make -j is not supported, use make JOBS=n") and jdk17+'s Init.gmk
+#   derives its -j from $(JOBS) (serial when empty).
+# - WARNINGS_ARE_ERRORS= clears jdk8 hotspot's gcc.make -Werror: the adlc
+#   build helper is compiled by the modern host gcc (13), whose
+#   format-overflow diagnostics on upstream sprintf calls are fatal there.
+#   The command-line assignment overrides the makefile's plain "=" and
+#   propagates to every sub-make; 17+ ignores it (its gate is the
+#   spec-level WARNINGS_AS_ERRORS=false from --disable-warnings-as-errors).
+make -C "${BUILD_DIR}" JOBS="${JOBS}" WARNINGS_ARE_ERRORS= images
 
 if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
     IMAGE_DIR="${BUILD_DIR}/j2re-image"
