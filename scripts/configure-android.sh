@@ -27,29 +27,36 @@ COMMON_FLAGS=(
     "--with-debug-level=release"
     "--with-native-debug-symbols=none"
     "--with-jvm-variants=${JVM_VARIANT}"
-    "--enable-headless-only"
-    "--disable-werror"
-    "--disable-dtrace"
-    "--disable-precompiled-headers"
     "--with-freetype=bundled"
 )
 
 if [[ "${ECLIPSE_JRE_VERSION}" == "8" ]]; then
-    # jdk8u autoconf (older autoconf: uses --with-boot-jdk, target via
-    # --openjdk-target as well on recent 8u updates).
+    # jdk8u's autoconf predates the 9+ options (--enable-headless-only,
+    # --disable-werror, --disable-dtrace, --with-version-opt) and rejects
+    # them with "unrecognized options"; this branch only passes options
+    # jdk8u understands.
     CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" STRIP="${STRIP}" \
     bash configure "${COMMON_FLAGS[@]}" \
         --disable-jfr \
-        --with-version-opt="eclipse$(date -u +%Y%m%d)"
+        --disable-precompiled-headers
 else
     # JDK 17+ autoconf.
     EXTRA_CFLAGS="--target=${TRIPLE}${ANDROID_API} -fPIC"
     EXTRA_CXXFLAGS="${EXTRA_CFLAGS}"
     CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" STRIP="${STRIP}" \
     bash configure "${COMMON_FLAGS[@]}" \
+        --enable-headless-only \
+        --disable-werror \
+        --disable-dtrace \
+        --disable-precompiled-headers \
+        --with-version-opt="eclipse$(date -u +%Y%m%d)" \
         --with-extra-cflags="${EXTRA_CFLAGS}" \
-        --with-extra-cxxflags="${EXTRA_CXXFLAGS}" \
-        --with-version-opt="eclipse$(date -u +%Y%m%d)"
+        --with-extra-cxxflags="${EXTRA_CXXFLAGS}"
+fi
+
+if [[ ! -d "${SRC_DIR}/build" ]]; then
+    echo "configure did not produce ${SRC_DIR}/build - see configure output above" >&2
+    exit 1
 fi
 
 echo "configure finished; build output at ${SRC_DIR}/build"
